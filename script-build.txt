@@ -1,0 +1,4 @@
+c:\python312\Scripts\pyinstaller.exe --onefile --windowed `
+  --add-data "modbus_generator.py;." `
+  --add-data "modbus_to_hmi.py;." `
+  modbus_ui.py
