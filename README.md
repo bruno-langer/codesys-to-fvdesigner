@@ -6,6 +6,11 @@ Automates Modbus register table creation from CoDeSys PLC projects and converts 
 
 ---
 
+![alt text](image.png)
+
+---
+
+
 ## Project Files
 
 Keep all three files in the same folder:
