@@ -49,15 +49,32 @@ NS = {"c": "http://www.3s-software.com/schemas/Symbolconfiguration.xsd"}
 # ─────────────────────────────────────────────────────────────
 ALLOWED_TYPES: dict = {
     "BOOL":  ("BOOL",  1),   # → Coil
+    "BYTE":  ("BYTE",  1),   # → Coil
     "INT":   ("INT",   1),   # → HoldingRegister x1  (16-bit)
     "UINT":  ("UINT",  1),   # → HoldingRegister x1  (16-bit)
     "WORD":  ("WORD",  1),   # → HoldingRegister x1  (16-bit)
     "DINT":  ("DINT",  2),   # → HoldingRegister x2  (32-bit)
+    "USINT":  ("USINT",  1),   # → HoldingRegister x2  (32-bit)
+    "UDINT": ("UDINT",  2),   # → HoldingRegister x2  (32-bit)
     "REAL":  ("REAL",  2),   # → HoldingRegister x2  (32-bit)
+    "MODO_COMPONENTE": ("INT", 1),  # Custom type used in some projects; treat as INT
+    "STATUS_COMPONENTE": ("INT", 1),  # Custom type used in some projects; treat as INT
+    "STATUS_EQUIP": ("INT", 1),  # Custom type used in some projects; treat as INT
+    "MODO_TRABALHO_CPPE": ("INT", 1),  # Custom type used in some projects; treat as INT
+    "MODO_PISTOLAS": ("INT", 1),  # Custom type used in some projects; treat as INT
+    "TIME": ("DINT", 2),  # Custom type used in some projects; treat as DINT (ms)
 }
 
 # Detect ARRAY types, e.g. "ARRAY [0..9] OF INT"
 ARRAY_RE = re.compile(r"^ARRAY\s*\[", re.IGNORECASE)
+
+# Data structure for array type info
+@dataclass
+class ArrayTypeInfo:
+    """Metadata for an array type parsed from TypeArray XML."""
+    iecname: str          # e.g. "ARRAY [0..16, 0..16] OF BOOL"
+    basetype: str         # e.g. "BOOL", "REAL", "INT"
+    dimensions: list      # list of (min, max) tuples
 
 
 def normalize_type(raw: str) -> str:
@@ -114,6 +131,41 @@ class State:
 # ─────────────────────────────────────────────────────────────
 # XML helpers
 # ─────────────────────────────────────────────────────────────
+def load_array_types(root) -> dict:
+    """
+    Returns { 'ARRAY_TYPENAME': ArrayTypeInfo(...) }
+    from the <TypeList> section of the XML.
+    Parses TypeArray elements with ArrayDim children.
+    """
+    result = {}
+    types_node = root.find("c:TypeList", NS)
+    if types_node is None:
+        return result
+    
+    for typedef in types_node.findall("c:TypeArray", NS):
+        # Use the internal name (e.g., T_ARRAY__0__16__OF_BOOL)
+        typename = normalize_type(typedef.attrib.get("name", ""))
+        iecname = typedef.attrib.get("iecname", "")  # e.g., "ARRAY [0..16] OF BOOL"
+        basetype_raw = typedef.attrib.get("basetype", "")  # e.g., "T_BOOL"
+        basetype = normalize_type(basetype_raw)
+        
+        # Parse dimensions from ArrayDim elements
+        dimensions = []
+        for dim in typedef.findall("c:ArrayDim", NS):
+            minrange = int(dim.attrib.get("minrange", 0))
+            maxrange = int(dim.attrib.get("maxrange", 0))
+            dimensions.append((minrange, maxrange))
+        
+        if dimensions and basetype:
+            result[typename] = ArrayTypeInfo(
+                iecname=iecname,
+                basetype=basetype,
+                dimensions=dimensions
+            )
+    
+    return result
+
+
 def load_user_types(root) -> dict:
     """
     Returns { 'TYPENAME': [('member_name', 'MEMBER_TYPE'), ...] }
@@ -141,7 +193,7 @@ def load_user_types(root) -> dict:
 # ─────────────────────────────────────────────────────────────
 # Core walker
 # ─────────────────────────────────────────────────────────────
-def walk_node(node, user_types: dict, state: State, server: str,
+def walk_node(node, user_types: dict, array_types: dict, state: State, server: str,
               path: str = "", filter_prefixes: list = None):
     name     = node.attrib.get("name", "")
     raw_type = (node.attrib.get("type") or "").strip()
@@ -157,35 +209,42 @@ def walk_node(node, user_types: dict, state: State, server: str,
     # Intermediate node → recurse into XML children
     if children:
         for child in children:
-            walk_node(child, user_types, state, server, new_path, filter_prefixes)
+            walk_node(child, user_types, array_types, state, server, new_path, filter_prefixes)
         return
 
     # Leaf node → resolve type and emit
-    emit(new_path, raw_type, user_types, state, server, visited=set())
+    emit(new_path, raw_type, user_types, array_types, state, server, visited=set())
 
 
-def emit(path: str, raw_type: str, user_types: dict, state: State,
+def emit(path: str, raw_type: str, user_types: dict, array_types: dict, state: State,
          server: str, visited: set):
     """
     Resolve a type string and append ModbusEntry objects to state.
 
     Resolution order:
       1. Normalize: strip leading 'T_' prefix (CoDeSys XML artifact)
-      2. Array?          → skip (size unknown)
+      2. Array type def? → expand array elements recursively
       3. Known primitive → emit HoldingRegister or Coil
       4. User struct     → explode members recursively
       5. No match        → warn
     """
     iec_type = normalize_type(raw_type)
 
-    # Array → skip
+    # Check if this is an array type definition (e.g., T_ARRAY__0__16__OF_BOOL)
+    if iec_type in array_types:
+        array_info = array_types[iec_type]
+        expand_array(path, array_info, user_types, array_types, state, server, visited)
+        return
+
+    # Fallback: if it's an inline array syntax (rare), skip it
     if ARRAY_RE.match(iec_type):
+        print(f"⚠️  Skipping inline array syntax (use TypeArray): {path}  →  {raw_type}")
         state.skipped_array.append((path, raw_type))
         return
 
     # Known primitive in allowlist
     if iec_type in ALLOWED_TYPES:
-        _, reg_count = ALLOWED_TYPES[iec_type]
+        internalType, reg_count = ALLOWED_TYPES[iec_type]
         if iec_type == "BOOL":
             state.entries.append(ModbusEntry(
                 server=server, variable=path,
@@ -199,7 +258,7 @@ def emit(path: str, raw_type: str, user_types: dict, state: State,
                 server=server, variable=path,
                 modbus_type="HoldingRegister",
                 start_address=state.hr_cursor,
-                iec_type=iec_type,
+                iec_type=internalType,
             ))
             state.hr_cursor += reg_count
         return
@@ -213,11 +272,40 @@ def emit(path: str, raw_type: str, user_types: dict, state: State,
         visited = visited | {iec_type}
         for member_name, member_raw_type in user_types[iec_type]:
             emit(f"{path}.{member_name}", member_raw_type,
-                 user_types, state, server, visited)
+                 user_types, array_types, state, server, visited)
         return
 
     # Nothing matched
     state.skipped_unknown.append((path, raw_type))
+
+
+def expand_array(path: str, array_info: ArrayTypeInfo, user_types: dict,
+                 array_types: dict, state: State, server: str, visited: set):
+    """
+    Recursively expand array indices and emit entries for each element.
+    Handles multi-dimensional arrays by iterating through all index combinations.
+    """
+    dimensions = array_info.dimensions
+    basetype = array_info.basetype
+    
+    # Generate index combinations for all dimensions
+    def generate_indices(dims, current=[]):
+        """Generator for all index combinations in multi-dimensional array."""
+        if not dims:
+            yield current
+            return
+        minr, maxr = dims[0]
+        for i in range(minr, maxr + 1):
+            yield from generate_indices(dims[1:], current + [i])
+    
+    # Emit entry for each array element
+    for indices in generate_indices(dimensions):
+        # Build subscript notation, e.g., "[0]", "[1,5]", "[3,2,7]"
+        subscript = "[" + ",".join(map(str, indices)) + "]"
+        element_path = f"{path}{subscript}"
+        
+        # Recursively emit the base type for this element
+        emit(element_path, basetype, user_types, array_types, state, server, visited)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -333,6 +421,9 @@ def main():
 
     user_types = load_user_types(root)
     print(f"🔧 User-defined types: {len(user_types)}  →  {list(user_types.keys())}")
+    
+    array_types = load_array_types(root)
+    print(f"📊 Array types: {len(array_types)}  →  {list(array_types.keys())}")
 
     state = State(hr_cursor=args.hr_start, coil_cursor=args.coil_start)
 
@@ -346,7 +437,7 @@ def main():
         sys.exit(1)
 
     for node in nodes.findall("c:Node", NS):
-        walk_node(node, user_types, state, args.server,
+        walk_node(node, user_types, array_types, state, args.server,
                   path="", filter_prefixes=filter_prefixes)
 
     write_csv(state, args.out, args.server, args.parent, args.connector, args.port)

@@ -423,6 +423,7 @@ class App(tk.Tk):
                 root = tree.getroot()
 
                 user_types = gen.load_user_types(root)
+                array_types = gen.load_array_types(root)
                 state = gen.State(
                     hr_cursor=self.v_hr_start.get(),
                     coil_cursor=self.v_coil_start.get(),
@@ -434,7 +435,7 @@ class App(tk.Tk):
                     raise RuntimeError("No NodeList found in XML.")
 
                 for node in nodes.findall("c:Node", gen.NS):
-                    gen.walk_node(node, user_types, state, self.v_server.get(),
+                    gen.walk_node(node, user_types, array_types, state, self.v_server.get(),
                                   path="", filter_prefixes=filter_prefixes)
 
                 gen.write_csv(state, modbus_csv,

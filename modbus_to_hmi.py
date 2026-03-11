@@ -57,10 +57,13 @@ from dataclasses import dataclass
 # IEC type → (hmi_type, double_register)
 IEC_TO_HMI: dict = {
     "BOOL":  ("Bit",           False),
+    "BYTE":   ("16Bit-INT",     False),
     "INT":   ("16Bit-INT",     False),
     "UINT":  ("16Bit-UINT",    False),
-    "WORD":  ("16Bit-INT",     False),
+    "USINT":  ("16Bit-USINT",    False),
     "DINT":  ("32Bit-INT",     True),
+    "WORD":  ("16Bit-INT",     False),
+    "UDINT": ("32Bit-INT",     True),
     "REAL":  ("32Bit-FLOAT",   True),
 }
 
@@ -70,8 +73,7 @@ IEC_TO_HMI: dict = {
 # ─────────────────────────────────────────────────────────────
 def format_address(modbus_type: str, start_address: int, double_reg: bool) -> str:
     """
-    Convert Modbus CSV address fields to HMI @modbus notation.
-    HMI uses 1-based addressing: DataStartAddress + 1.
+    Convert Modbus CSV address fields to HMI @modbus notation..
     Double-register types (DINT, REAL) use the 'D' prefix.
     """
     hmi_addr = start_address   # 1-based
@@ -99,6 +101,7 @@ def clean_name(raw: str, strip_prefixes: list, sep: str) -> str:
             name = name[len(prefix):]
             break
     name = name.replace(".", sep)
+    name = name.replace(',',sep)
     return name
 
 
@@ -234,7 +237,7 @@ def parse_args():
     )
     p.add_argument("--in",              dest="inp", required=True,     help="Input Modbus CSV")
     p.add_argument("--out",             default="hmi_tags.csv",        help="Output HMI CSV")
-    p.add_argument("--id-start",        default=0,   type=int,         help="Starting Id value")
+    p.add_argument("--id-start",        default=1,   type=int,         help="Starting Id value")
     p.add_argument("--writeable",       default=1,   type=int, choices=[0,1],
                    help="Default writeable flag (0=read-only, 1=writeable)")
     p.add_argument("--writeable-coils", default=None, type=int, choices=[0,1],
