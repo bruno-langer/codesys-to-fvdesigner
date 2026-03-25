@@ -6,9 +6,20 @@ Automates Modbus register table creation from CoDeSys PLC projects and converts 
 
 ---
 
-![alt text](image.png)
+![alt text](/assets/image.png)
 
 ---
+
+Importing Codesys Process
+
+![How to Import on Codesys](/assets/codesys.png)
+
+---
+
+Importing FV Designer Process
+
+![How to Import on Codesys](/assets/fvdesigner.png)
+
 
 
 ## Project Files
